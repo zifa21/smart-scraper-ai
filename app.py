@@ -18,7 +18,6 @@ def install_playwright():
         subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
     
     subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-    subprocess.check_call([sys.executable, "-m", "playwright", "install-deps"])
 
 install_playwright()
 
