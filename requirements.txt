@@ -1,6 +1,6 @@
 streamlit
+google-generativeai
 playwright
 beautifulsoup4
 pandas
-openai
 requests
