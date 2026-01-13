@@ -4,24 +4,11 @@ import json
 import pandas as pd
 import google.generativeai as genai
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
-import subprocess
-import sys
+import requests
 import time
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Smart Scraper AI - Gemini", page_icon="🛒", layout="wide")
-
-# --- INSTALLATION AUTOMATIQUE DU NAVIGATEUR ---
-@st.cache_resource
-def ensure_playwright_browsers():
-    try:
-        # Installation silencieuse de Chromium
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-    except Exception as e:
-        st.error(f"Note sur l'installation : {e}")
-
-ensure_playwright_browsers()
 
 # --- INITIALISATION GEMINI ---
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -33,42 +20,56 @@ else:
 
 class SmartScraper:
     def fetch_page(self, url):
-        # Utilisation de la version SYNCHRONE pour éviter les erreurs de boucle asyncio
-        with sync_playwright() as p:
-            try:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-                page = context.new_page()
-                page.goto(url, wait_until="networkidle", timeout=60000)
-                
-                # Scroll pour charger le contenu dynamique
-                page.mouse.wheel(0, 2000)
-                time.sleep(4)
-                
-                content = page.content()
-                browser.close()
-                return content
-            except Exception as e:
-                st.error(f"Erreur de chargement : {e}")
-                return None
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.google.com/"
+        }
+        try:
+            # On utilise une session pour gérer les cookies
+            session = requests.Session()
+            response = session.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            st.error(f"Erreur de connexion au site : {e}")
+            return None
 
     def clean_html(self, html):
         soup = BeautifulSoup(html, 'html.parser')
-        for s in soup(["script", "style", "nav", "footer", "header", "svg", "path", "iframe"]):
+        # On supprime tout ce qui n'est pas du contenu produit
+        for s in soup(["script", "style", "nav", "footer", "header", "svg", "path", "iframe", "aside"]):
             s.decompose()
-        # On garde les attributs importants pour l'EAN et les images
-        return soup.prettify()[:45000]
-
-    def extract_with_gemini(self, html_content):
-        prompt = f"""
-        Tu es un expert en Retail Arbitrage. Analyse ce HTML et extrais TOUS les produits visibles.
-        Pour chaque produit, fournis : Nom, Prix, Marque, Code EAN (GTIN), URL Image, URL Produit.
-        Si l'EAN n'est pas visible, cherche dans les attributs 'data-ean' ou 'gtin'.
         
-        Réponds UNIQUEMENT avec un tableau JSON valide.
-        HTML: {html_content}
+        # On extrait les balises qui contiennent potentiellement des infos produits
+        important_tags = soup.find_all(['div', 'span', 'a', 'img', 'h1', 'h2', 'h3', 'li'])
+        
+        # On reconstruit un HTML ultra-léger pour Gemini
+        mini_html = ""
+        for tag in important_tags:
+            if tag.name == 'img' and tag.get('src'):
+                mini_html += f'<img src="{tag.get("src")}"> '
+            elif tag.text.strip():
+                # On garde les attributs qui contiennent souvent l'EAN
+                ean_info = ""
+                for attr in ['data-ean', 'data-gtin', 'itemprop', 'content']:
+                    if tag.get(attr):
+                        ean_info += f' {attr}="{tag.get(attr)}"'
+                mini_html += f'<{tag.name}{ean_info}>{tag.text.strip()[:200]}</{tag.name}> '
+        
+        return mini_html[:50000] # On donne un maximum de contexte à Gemini
+
+    def extract_with_gemini(self, html_content, url):
+        prompt = f"""
+        Tu es un expert en Retail Arbitrage. Analyse ce contenu HTML provenant de {url} et extrais TOUS les produits.
+        Pour chaque produit, trouve : Nom, Prix, Marque, Code EAN (GTIN), URL Image, URL Produit.
+        
+        IMPORTANT : 
+        1. Si l'EAN n'est pas explicite, cherche dans les attributs ou les descriptions.
+        2. Si les URLs sont relatives, complète-les avec le domaine du site.
+        3. Réponds UNIQUEMENT avec un tableau JSON valide.
+        
+        CONTENU : {html_content}
         """
         try:
             response = model.generate_content(prompt)
@@ -77,11 +78,11 @@ class SmartScraper:
                 res_text = res_text.split("```json")[1].split("```")[0]
             return json.loads(res_text)
         except Exception as e:
-            st.error(f"Erreur IA : {e}")
+            st.error(f"Erreur d'analyse IA : {e}")
             return []
 
 # --- INTERFACE ---
-st.title("🛒 Smart Scraper AI (Gemini)")
+st.title("🛒 Smart Scraper AI (Gemini Ultra-Light)")
 st.markdown("### Outil de détection autonome pour le Retail Arbitrage")
 
 url_input = st.text_input("Entrez l'URL du listing (Lidl, Fnac, Carrefour, etc.)")
@@ -94,13 +95,13 @@ if st.button("Lancer l'extraction", type="primary"):
     else:
         scraper = SmartScraper()
         with st.status("Extraction en cours...", expanded=True) as status:
-            st.write("🌐 Ouverture du navigateur et chargement de la page...")
+            st.write("🌐 Récupération du contenu du site...")
             html = scraper.fetch_page(url_input)
             
             if html:
-                st.write("🧠 Analyse des données par Gemini 1.5 Flash...")
+                st.write("🧠 Analyse intelligente par Gemini 1.5 Flash...")
                 clean_html = scraper.clean_html(html)
-                products = scraper.extract_with_gemini(clean_html)
+                products = scraper.extract_with_gemini(clean_html, url_input)
                 
                 if products:
                     status.update(label="Extraction terminée !", state="complete")
@@ -111,6 +112,6 @@ if st.button("Lancer l'extraction", type="primary"):
                     csv = df.to_csv(index=False).encode('utf-8')
                     st.download_button("📥 Télécharger CSV", csv, "arbitrage_data.csv", "text/csv")
                 else:
-                    status.update(label="Aucun produit trouvé.", state="error")
+                    status.update(label="Aucun produit trouvé. Le site bloque peut-être les requêtes directes.", state="error")
             else:
-                status.update(label="Échec du chargement.", state="error")
+                status.update(label="Échec de la récupération.", state="error")
