@@ -1,63 +1,48 @@
-import streamlit as st
+import subprocess
+import sys
 import os
+
+# --- INSTALLATION AUTOMATIQUE DES DÉPENDANCES ---
+def install_dependencies():
+    dependencies = ["google-generativeai", "playwright", "beautifulsoup4", "pandas", "requests"]
+    for lib in dependencies:
+        try:
+            __import__(lib.replace("-", "_"))
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
+    
+    # Installation spécifique des navigateurs Playwright
+    try:
+        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+    except Exception as e:
+        print(f"Note: Playwright browser install: {e}")
+
+install_dependencies()
+
+# --- IMPORT DES BIBLIOTHÈQUES ---
+import streamlit as st
 import json
 import asyncio
 import pandas as pd
-import subprocess
-import sys
 import google.generativeai as genai
-
-# Configuration de la page
-st.set_page_config(page_title="Smart Scraper AI (Gemini)", page_icon="🛒", layout="wide")
-
-# Installation de Playwright si nécessaire
-@st.cache_resource
-def install_playwright():
-    try:
-        import playwright
-    except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-    subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
-
-install_playwright()
-
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 import requests
 from datetime import datetime
 
+# --- CONFIGURATION ---
+st.set_page_config(page_title="Smart Scraper AI - Gemini Edition", page_icon="🛒", layout="wide")
+
 # Initialisation de Gemini
 api_key = st.secrets.get("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash') # Utilisation de la version Flash
+    model = genai.GenerativeModel('gemini-1.5-flash') # Version stable et gratuite
 else:
-    st.error("Veuillez configurer GEMINI_API_KEY dans les Secrets de Streamlit.")
+    st.error("⚠️ GEMINI_API_KEY manquante dans les Secrets de Streamlit.")
 
 class SmartScraper:
-    def __init__(self):
-        self.history_file = "scraping_history.json"
-        if 'history' not in st.session_state:
-            st.session_state.history = self.load_history()
-
-    def load_history(self):
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, 'r') as f:
-                    return json.load(f)
-            except:
-                return []
-        return []
-
-    def save_to_history(self, products):
-        for p in products:
-            if not any(h.get('name') == p.get('name') and h.get('price') == p.get('price') for h in st.session_state.history):
-                p['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                st.session_state.history.append(p)
-        with open(self.history_file, 'w') as f:
-            json.dump(st.session_state.history, f, indent=4)
-
-    async def detect_and_fetch(self, url):
+    async def fetch_page(self, url):
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
@@ -66,64 +51,76 @@ class SmartScraper:
             page = await context.new_page()
             try:
                 await page.goto(url, wait_until="networkidle", timeout=60000)
+                # Petit scroll pour charger le contenu dynamique
+                await page.mouse.wheel(0, 1000)
                 await asyncio.sleep(2)
                 content = await page.content()
                 await browser.close()
                 return content
-            except:
+            except Exception as e:
                 await browser.close()
+                st.error(f"Erreur de navigation: {e}")
                 return None
 
     def clean_html(self, html):
         soup = BeautifulSoup(html, 'html.parser')
-        for s in soup(["script", "style", "svg", "path", "footer", "nav", "header"]):
+        # On garde l'essentiel pour l'IA
+        for s in soup(["script", "style", "nav", "footer", "header", "svg"]):
             s.decompose()
         return soup.prettify()[:30000]
 
-    async def analyze_with_gemini(self, html_snippet):
+    async def extract_with_gemini(self, html_content):
         prompt = f"""
-        Analyse ce code HTML e-commerce et extrais les produits.
-        HTML: {html_snippet}
+        Tu es un expert en Retail Arbitrage. Analyse ce HTML et extrais la liste des produits.
+        Pour chaque produit, trouve : Nom, Prix, Marque, Code EAN (GTIN), URL Image, URL Produit.
         
-        Retourne UNIQUEMENT un JSON valide (liste d'objets) avec:
-        - name: nom du produit
-        - price: prix
-        - brand: marque
-        - ean: code EAN/GTIN (cherche bien)
-        - image_url: lien image
-        - product_url: lien produit
+        HTML: {html_content}
+        
+        Réponds UNIQUEMENT avec un tableau JSON valide.
         """
         try:
             response = model.generate_content(prompt)
-            # Nettoyage de la réponse pour extraire le JSON
-            text = response.text
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0]
-            return json.loads(text)
+            res_text = response.text
+            # Nettoyage du format markdown si présent
+            if "```json" in res_text:
+                res_text = res_text.split("```json")[1].split("```")[0]
+            return json.loads(res_text)
         except Exception as e:
-            st.error(f"Erreur Gemini: {e}")
+            st.error(f"Erreur IA Gemini: {e}")
             return []
 
-# Interface
-st.title("🚀 Smart Scraper AI (Gemini 2.5 Flash)")
+# --- INTERFACE UTILISATEUR ---
+st.title("🛒 Smart Scraper AI (Gemini 1.5 Flash)")
+st.info("Outil autonome pour le Retail Arbitrage - Détection intelligente de produits.")
 
-url_input = st.text_input("URL du site à scraper")
+url_input = st.text_input("Collez l'URL du site (Lidl, Fnac, Carrefour, etc.)", placeholder="https://www.example.com/produits")
 
-if st.button("Lancer le Scraping"):
+if st.button("Lancer l'extraction", type="primary"):
     if not api_key:
-        st.error("Clé API manquante.")
-    elif url_input:
+        st.warning("Veuillez configurer votre GEMINI_API_KEY dans Streamlit Cloud.")
+    elif not url_input:
+        st.warning("Veuillez entrer une URL valide.")
+    else:
         scraper = SmartScraper()
-        with st.spinner("Scraping en cours avec Gemini..."):
-            html = asyncio.run(scraper.detect_and_fetch(url_input))
+        with st.status("Extraction en cours...", expanded=True) as status:
+            st.write("🌐 Chargement de la page (Playwright)...")
+            html = asyncio.run(scraper.fetch_page(url_input))
+            
             if html:
-                clean = scraper.clean_html(html)
-                products = asyncio.run(scraper.analyze_with_gemini(clean))
+                st.write("🧠 Analyse intelligente par Gemini...")
+                clean_html = scraper.clean_html(html)
+                products = asyncio.run(scraper.extract_with_gemini(clean_html))
+                
                 if products:
+                    status.update(label="Extraction réussie !", state="complete")
                     df = pd.DataFrame(products)
-                    st.dataframe(df)
-                    st.download_button("Télécharger CSV", df.to_csv(index=False), "data.csv")
+                    st.subheader(f"📦 {len(products)} Produits détectés")
+                    st.dataframe(df, use_container_width=True)
+                    
+                    # Export
+                    csv = df.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Télécharger les données (CSV)", csv, "extract_arbitrage.csv", "text/csv")
                 else:
-                    st.warning("Aucun produit trouvé.")
+                    status.update(label="Aucun produit trouvé.", state="error")
             else:
-                st.error("Erreur de chargement de la page.")
+                status.update(label="Échec du chargement de la page.", state="error")
