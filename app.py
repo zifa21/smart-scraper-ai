@@ -74,10 +74,10 @@ class SmartScraper:
                     await page.mouse.wheel(0, 800)
                     await asyncio.sleep(1)
                 content = await page.content()
-                json_ld = await page.evaluate(\"\"\"() => {
-                    return Array.from(document.querySelectorAll('script[type=\"application/ld+json\"]'))
+                json_ld = await page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
                         .map(s => s.innerText);
-                }\"\"\")
+                }""")
                 await browser.close()
                 return {"type": "Statique" if is_static else "Dynamique", "html": content, "json_ld": json_ld}
             except Exception as e:
@@ -95,11 +95,11 @@ class SmartScraper:
         return soup.prettify()[:30000]
 
     async def analyze_with_ai(self, html_snippet, json_ld, url, site_type):
-        context = f"Site: {url}\\nType: {site_type}\\n"
+        context = f"Site: {url}\nType: {site_type}\n"
         if json_ld:
-            context += f"JSON-LD: {json_ld[:5000]}\\n"
+            context += f"JSON-LD: {json_ld[:5000]}\n"
         
-        prompt = f\"\"\"
+        prompt = f"""
         Tu es un expert en extraction de données e-commerce. Analyse ce code HTML et JSON-LD pour extraire les produits.
         {context}
         HTML: {html_snippet}
@@ -111,7 +111,7 @@ class SmartScraper:
         - ean: code EAN/GTIN (TRÈS IMPORTANT, cherche partout)
         - image_url: lien de l'image principale
         - product_url: lien vers la page produit (si relatif, garde le tel quel)
-        \"\"\"
+        """
         
         try:
             response = client.chat.completions.create(
@@ -134,14 +134,14 @@ class SmartScraper:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             try:
-                await page.goto(product_url, wait_until=\"networkidle\", timeout=30000)
+                await page.goto(product_url, wait_until="networkidle", timeout=30000)
                 content = await page.content()
                 await browser.close()
                 
-                prompt = f\"Extrais UNIQUEMENT le code EAN/GTIN de ce HTML. Si non trouvé, réponds 'null'. HTML: {content[:20000]}\"
+                prompt = f"Extrais UNIQUEMENT le code EAN/GTIN de ce HTML. Si non trouvé, réponds 'null'. HTML: {content[:20000]}"
                 response = client.chat.completions.create(
-                    model=\"gpt-4.1-mini\",
-                    messages=[{\"role\": \"user\", \"content\": prompt}]
+                    model="gpt-4.1-mini",
+                    messages=[{"role": "user", "content": prompt}]
                 )
                 ean = response.choices[0].message.content.strip()
                 return ean if ean.lower() != 'null' else None
@@ -150,40 +150,40 @@ class SmartScraper:
                 return None
 
 # Interface Streamlit
-st.title(\"🚀 Smart Scraper AI - Retail Arbitrage\")
-st.markdown(\"Outil autonome pour détecter et extraire les produits avec EAN.\")
+st.title("🚀 Smart Scraper AI - Retail Arbitrage")
+st.markdown("Outil autonome pour détecter et extraire les produits avec EAN.")
 
 with st.sidebar:
-    st.header(\"Paramètres\")
-    deep_scan = st.checkbox(\"Scan approfondi (visite chaque page pour l'EAN)\", value=False)
-    if st.button(\"Effacer l'historique\"):
-        if os.path.exists(\"scraping_history.json\"):
-            os.remove(\"scraping_history.json\")
+    st.header("Paramètres")
+    deep_scan = st.checkbox("Scan approfondi (visite chaque page pour l'EAN)", value=False)
+    if st.button("Effacer l'historique"):
+        if os.path.exists("scraping_history.json"):
+            os.remove("scraping_history.json")
         st.session_state.history = []
         st.rerun()
 
-url_input = st.text_input(\"Entrez l'URL du listing (ex: Lidl, Fnac, Carrefour...)\", placeholder=\"https://www.lidl.fr/c/cuisiner/c158\")
+url_input = st.text_input("Entrez l'URL du listing (ex: Lidl, Fnac, Carrefour...)", placeholder="https://www.lidl.fr/c/cuisiner/c158")
 
-if st.button(\"Lancer le Scraping\", type=\"primary\"):
+if st.button("Lancer le Scraping", type="primary"):
     if not url_input:
-        st.warning(\"Veuillez entrer une URL.\")
+        st.warning("Veuillez entrer une URL.")
     else:
         scraper = SmartScraper()
-        with st.status(\"Analyse du site en cours...\", expanded=True) as status:
-            st.write(\"Détection de la structure...\")
+        with st.status("Analyse du site en cours...", expanded=True) as status:
+            st.write("Détection de la structure...")
             site_data = asyncio.run(scraper.detect_and_fetch(url_input))
             
             if site_data:
-                st.write(f\"Type détecté: **{site_data['type']}**\")
-                st.write(\"Extraction des données par l'IA...\")
+                st.write(f"Type détecté: **{site_data['type']}**")
+                st.write("Extraction des données par l'IA...")
                 clean_html = scraper.clean_html(site_data['html'])
                 products = asyncio.run(scraper.analyze_with_ai(clean_html, site_data['json_ld'], url_input, site_data['type']))
                 
                 if products:
-                    st.write(f\"✅ {len(products)} produits trouvés.\")
+                    st.write(f"✅ {len(products)} produits trouvés.")
                     
                     if deep_scan:
-                        st.write(\"🔍 Lancement du scan approfondi pour les EAN...\")
+                        st.write("🔍 Lancement du scan approfondi pour les EAN...")
                         progress_bar = st.progress(0)
                         for i, p in enumerate(products):
                             if not p.get('ean') and p.get('product_url'):
@@ -193,26 +193,26 @@ if st.button(\"Lancer le Scraping\", type=\"primary\"):
                             progress_bar.progress((i + 1) / len(products))
                     
                     scraper.save_to_history(products)
-                    status.update(label=\"Scraping terminé !\", state=\"complete\", expanded=False)
+                    status.update(label="Scraping terminé !", state="complete", expanded=False)
                     
-                    st.subheader(\"Résultats\")
+                    st.subheader("Résultats")
                     df = pd.DataFrame(products)
                     st.dataframe(df, use_container_width=True)
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.download_button(\"Télécharger CSV\", df.to_csv(index=False), \"products.csv\", \"text/csv\")
+                        st.download_button("Télécharger CSV", df.to_csv(index=False), "products.csv", "text/csv")
                     with col2:
-                        st.download_button(\"Télécharger JSON\", df.to_json(orient=\"records\"), \"products.json\", \"application/json\")
+                        st.download_button("Télécharger JSON", df.to_json(orient="records"), "products.json", "application/json")
                 else:
-                    st.error(\"Aucun produit trouvé. L'IA n'a pas pu identifier de listing.\")
+                    st.error("Aucun produit trouvé. L'IA n'a pas pu identifier de listing.")
             else:
-                st.error(\"Impossible d'accéder au site.\")
+                st.error("Impossible d'accéder au site.")
 
 st.divider()
-st.subheader(\"📜 Historique Global\")
+st.subheader("📜 Historique Global")
 if st.session_state.get('history'):
     history_df = pd.DataFrame(st.session_state.history)
     st.dataframe(history_df, use_container_width=True)
 else:
-    st.info(\"L'historique est vide.\")
+    st.info("L'historique est vide.")
